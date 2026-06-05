@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
+import os
 from datetime import datetime
 
 CLIENT_ID = "8361153242610469"
-CLIENT_SECRET = "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd"
+CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
 REDIRECT_URI = "https://dianostico-ml-lldf9fyphmfxxhserhiw6q.streamlit.app"
 
 def get_access_token(code):
