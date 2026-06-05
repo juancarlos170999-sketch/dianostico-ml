@@ -4,7 +4,7 @@ from datetime import datetime
 
 CLIENT_ID = "8361153242610469"
 CLIENT_SECRET = "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd"
-REDIRECT_URI = "https://diagnostico-de-performance-mercado-livre.streamlit.app"
+REDIRECT_URI = "https://dianostico-ml-lldf9fyphmfxxhserhiw6q.streamlit.app"
 
 def get_access_token(code):
     response = requests.post(
