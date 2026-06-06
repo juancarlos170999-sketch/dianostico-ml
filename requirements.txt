@@ -1,5 +1,8 @@
-streamlit
+fastapi
+uvicorn
 requests
-plotly
-pandas
 supabase
+python-jose
+passlib
+python-multipart
+httpx
