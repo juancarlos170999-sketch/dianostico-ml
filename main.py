@@ -307,21 +307,19 @@ def analisar_item(item_id: str, token: str, user_id: str):
 def concorrentes(item_id: str, token: str):
     H = {"Authorization": f"Bearer {token}"}
     
-    # Busca item com token
     r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail="Item não encontrado")
     item = r.json()
-    categoria_id = item.get("category_id","")
     titulo = item.get("title","")
     preco_ref = item.get("price",0)
+    categoria_id = item.get("category_id","")
 
-    if not categoria_id:
-        raise HTTPException(status_code=400, detail="Categoria não encontrada")
-
-  # Busca concorrentes com autenticação
+    # Usa primeiras 3 palavras do título como query
+    palavras = " ".join(titulo.split()[:4])
+    
     r_busca = requests.get(
-        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10",
+        f"https://api.mercadolibre.com/sites/MLB/search?q={requests.utils.quote(palavras)}&sort=sold_quantity_desc&limit=10",
         headers=H
     )
     if r_busca.status_code != 200:
@@ -355,7 +353,6 @@ def concorrentes(item_id: str, token: str):
         "categoria_id": categoria_id,
         "concorrentes": concorrentes_lista
     }
-
 @app.get("/promocoes/{user_id}")
 def promocoes(user_id: str, token: str):
     H = {"Authorization": f"Bearer {token}"}
