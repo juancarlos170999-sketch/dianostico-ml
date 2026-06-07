@@ -39,6 +39,7 @@ class LoginData(BaseModel):
     senha: str
     nome: str = ""
     plano: str = "starter"
+    whatsapp: str = ""
 
 class CodeData(BaseModel):
     code: str
@@ -56,10 +57,10 @@ def register(data: LoginData):
         existe = supabase.table("usuarios").select("id").eq("email", data.email).execute()
         if existe.data:
             raise HTTPException(status_code=400, detail="Email já cadastrado")
-        r = supabase.table("usuarios").insert({
-            "email": data.email, "senha_hash": hash_senha(data.senha),
-            "nome": data.nome, "plano": data.plano
-        }).execute()
+        payload = {"email": data.email, "senha_hash": hash_senha(data.senha), "nome": data.nome, "plano": data.plano}
+        if data.whatsapp:
+            payload["whatsapp"] = data.whatsapp
+        r = supabase.table("usuarios").insert(payload).execute()
         return {"success": True, "usuario": r.data[0]}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
@@ -520,6 +521,16 @@ async def webhook_pagamento(request: Request):
                     supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
         return {"status": "ok"}
     except: return {"status": "ok"}
+
+class CancelData(BaseModel):
+    usuario_id: str
+
+@app.post("/pagamento/cancelar")
+def cancelar_plano(data: CancelData):
+    try:
+        supabase.table("usuarios").update({"plano": "starter"}).eq("id", data.usuario_id).execute()
+        return {"success": True}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health(): return {"status": "ok"}
