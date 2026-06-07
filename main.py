@@ -102,6 +102,109 @@ def ml_connect(data: CodeData):
         return {"success": True, "access_token": token, "ml_user_id": ml_uid, "nickname": nickname, "conta_ml_id": conta_id}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    # ============ PAGAMENTO ============
+MP_ACCESS_TOKEN_TEST = "TEST-717563241748022-060623-4ad997f3b63c9e541829c12ed3cbab25-165491273"
+MP_ACCESS_TOKEN_PROD = os.environ.get("MP_ACCESS_TOKEN_PROD", "")
+
+PLANOS = {
+    "starter": {"nome": "RaioxSeller Starter", "valor": 97.00},
+    "pro": {"nome": "RaioxSeller Pro", "valor": 197.00},
+    "agencia": {"nome": "RaioxSeller Agência", "valor": 397.00}
+}
+
+class AssinaturaData(BaseModel):
+    plano: str
+    usuario_id: str
+    email: str
+    nome: str = ""
+
+@app.post("/pagamento/criar")
+def criar_assinatura(data: AssinaturaData):
+    if data.plano not in PLANOS:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+    
+    plano = PLANOS[data.plano]
+    token = MP_ACCESS_TOKEN_TEST
+    
+    try:
+        # Cria plano de assinatura no MP
+        r_plano = requests.post(
+            "https://api.mercadopago.com/preapproval_plan",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "reason": plano["nome"],
+                "auto_recurring": {
+                    "frequency": 1,
+                    "frequency_type": "months",
+                    "transaction_amount": plano["valor"],
+                    "currency_id": "BRL"
+                },
+                "payment_methods_allowed": {
+                    "payment_types": [{"id": "credit_card"}, {"id": "debit_card"}],
+                    "payment_methods": [{"id": "pix"}]
+                },
+                "back_url": "https://raioxseller-frontend.vercel.app/sucesso"
+            }
+        )
+        plano_data = r_plano.json()
+        plano_id = plano_data.get("id")
+        
+        if not plano_id:
+            raise HTTPException(status_code=500, detail=f"Erro ao criar plano: {plano_data}")
+        
+        # Cria assinatura para o usuário
+        r_ass = requests.post(
+            "https://api.mercadopago.com/preapproval",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "preapproval_plan_id": plano_id,
+                "reason": plano["nome"],
+                "payer_email": data.email,
+                "auto_recurring": {
+                    "frequency": 1,
+                    "frequency_type": "months",
+                    "transaction_amount": plano["valor"],
+                    "currency_id": "BRL"
+                },
+                "back_url": "https://raioxseller-frontend.vercel.app/sucesso",
+                "external_reference": f"{data.usuario_id}_{data.plano}"
+            }
+        )
+        ass_data = r_ass.json()
+        init_point = ass_data.get("init_point")
+        
+        if not init_point:
+            raise HTTPException(status_code=500, detail=f"Erro ao criar assinatura: {ass_data}")
+        
+        return {"success": True, "checkout_url": init_point, "assinatura_id": ass_data.get("id")}
+    
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/pagamento/webhook")
+    async def webhook_pagamento(request: Request):
+    try:
+        body = await request.json()
+        tipo = body.get("type")
+        
+        if tipo == "subscription_preapproval":
+            ass_id = body.get("data", {}).get("id")
+            if ass_id:
+                token = MP_ACCESS_TOKEN_TEST
+                r = requests.get(
+                    f"https://api.mercadopago.com/preapproval/{ass_id}",
+                    headers={"Authorization": f"Bearer {token}"}
+                )
+                ass = r.json()
+                status = ass.get("status")
+                ref = ass.get("external_reference", "")
+                
+                if "_" in ref and status == "authorized":
+                    usuario_id, plano = ref.split("_", 1)
+                    supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
+        
+        return {"status": "ok"}
+    except: return {"status": "ok"}
 
 # ============ DIAGNÓSTICO ============
 @app.get("/diagnostico/{user_id}")
