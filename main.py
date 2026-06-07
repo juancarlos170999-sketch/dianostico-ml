@@ -315,12 +315,10 @@ def concorrentes(item_id: str, token: str):
     preco_ref = item.get("price",0)
     categoria_id = item.get("category_id","")
 
-    # Usa primeiras 3 palavras do título como query
     palavras = " ".join(titulo.split()[:4])
     
     r_busca = requests.get(
-        f"https://api.mercadolibre.com/sites/MLB/search?q={requests.utils.quote(palavras)}&sort=sold_quantity_desc&limit=10",
-        headers=H
+        f"https://api.mercadolibre.com/sites/MLB/search?q={requests.utils.quote(palavras)}&limit=10"
     )
     if r_busca.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar concorrentes: {r_busca.text}")
