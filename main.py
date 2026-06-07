@@ -21,7 +21,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://mfyabqodkjbpvykfkiwj.supa
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_YfRzYbb-YbKxMK1OcdvRKA_OrhdjIt1")
 CLIENT_ID = os.environ.get("ML_CLIENT_ID", "8361153242610469")
 CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd")
-REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://httpbingo.org/get")
+REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://raioxseller-frontend.vercel.app/callback")
 MP_TOKEN = "TEST-717563241748022-060623-4ad997f3b63c9e541829c12ed3cbab25-165491273"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
