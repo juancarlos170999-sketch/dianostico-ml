@@ -307,6 +307,7 @@ def analisar_item(item_id: str, token: str, user_id: str):
 def concorrentes(item_id: str, token: str):
     H = {"Authorization": f"Bearer {token}"}
     
+    # Busca o item de referência
     r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
     if r.status_code != 200:
         raise HTTPException(status_code=404, detail="Item não encontrado")
@@ -315,29 +316,39 @@ def concorrentes(item_id: str, token: str):
     preco_ref = item.get("price",0)
     categoria_id = item.get("category_id","")
 
-    palavras = " ".join(titulo.split()[:4])
-    
-    r_busca = requests.get(
-        f"https://api.mercadolibre.com/sites/MLB/search?q={requests.utils.quote(palavras)}&limit=10"
+    # Busca top itens da categoria via endpoint de categorias
+    r_cat = requests.get(
+        f"https://api.mercadolibre.com/categories/{categoria_id}/best_sellers",
+        headers=H
     )
-    if r_busca.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar concorrentes: {r_busca.text}")
+    
+    if r_cat.status_code == 200:
+        best_sellers = r_cat.json()
+        item_ids = [bs.get("item_id") for bs in best_sellers[:8] if bs.get("item_id") and bs.get("item_id") != item_id]
+    else:
+        # Fallback: busca itens similares via catalog
+        r_cat2 = requests.get(
+            f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&limit=10",
+            headers=H
+        )
+        if r_cat2.status_code != 200:
+            raise HTTPException(status_code=500, detail="Não foi possível buscar concorrentes. O ML restringe essa busca para apps não certificados.")
+        item_ids = [c.get("id") for c in r_cat2.json().get("results",[]) if c.get("id") != item_id][:8]
 
-    resultados = r_busca.json().get("results", [])
     concorrentes_lista = []
-
-    for c in resultados:
-        if c.get("id") == item_id: continue
-        seller = c.get("seller", {})
-        shipping = c.get("shipping", {})
+    for cid in item_ids[:8]:
+        rc = requests.get(f"https://api.mercadolibre.com/items/{cid}", headers=H)
+        if rc.status_code != 200: continue
+        c = rc.json()
+        shipping = c.get("shipping",{})
         logistica = shipping.get("logistic_type","")
         concorrentes_lista.append({
-            "item_id": c.get("id"),
+            "item_id": cid,
             "titulo": c.get("title","")[:50],
             "preco": c.get("price",0),
             "vendas": c.get("sold_quantity",0),
-            "seller_nome": seller.get("nickname",""),
-            "seller_reputacao": seller.get("seller_reputation",{}).get("power_seller_status",""),
+            "seller_nome": "",
+            "seller_reputacao": "",
             "logistica": "Full" if logistica=="fulfillment" else "Flex" if logistica=="xd_drop_off" else "Padrão",
             "frete_gratis": shipping.get("free_shipping", False),
             "diferenca_preco": round(c.get("price",0) - preco_ref, 2)
