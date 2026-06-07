@@ -306,20 +306,25 @@ def analisar_item(item_id: str, token: str, user_id: str):
 @app.get("/concorrentes/{item_id}")
 def concorrentes(item_id: str, token: str):
     H = {"Authorization": f"Bearer {token}"}
+    
+    # Busca item com token
     r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
-    if r.status_code != 200: raise HTTPException(status_code=404, detail="Item não encontrado")
+    if r.status_code != 200:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
     item = r.json()
     categoria_id = item.get("category_id","")
     titulo = item.get("title","")
     preco_ref = item.get("price",0)
 
-    if not categoria_id: raise HTTPException(status_code=400, detail="Categoria não encontrada")
+    if not categoria_id:
+        raise HTTPException(status_code=400, detail="Categoria não encontrada")
 
+    # Busca concorrentes sem autenticação
     r_busca = requests.get(
-        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10",
-        headers=H
+        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10"
     )
-    if r_busca.status_code != 200: raise HTTPException(status_code=500, detail="Erro ao buscar concorrentes")
+    if r_busca.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar concorrentes: {r_busca.text}")
 
     resultados = r_busca.json().get("results", [])
     concorrentes_lista = []
