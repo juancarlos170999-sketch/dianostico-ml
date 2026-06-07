@@ -184,9 +184,9 @@ def criar_assinatura(data: AssinaturaData):
 
     @app.post("/pagamento/webhook")
     async def webhook_pagamento(request: Request):
-    try:
-        body = await request.json()
-        tipo = body.get("type")
+        try:
+            body = await request.json()
+            tipo = body.get("type")
         
         if tipo == "subscription_preapproval":
             ass_id = body.get("data", {}).get("id")
