@@ -57,16 +57,12 @@ def register(data: LoginData):
         if existe.data:
             raise HTTPException(status_code=400, detail="Email já cadastrado")
         r = supabase.table("usuarios").insert({
-            "email": data.email,
-            "senha_hash": hash_senha(data.senha),
-            "nome": data.nome,
-            "plano": data.plano
+            "email": data.email, "senha_hash": hash_senha(data.senha),
+            "nome": data.nome, "plano": data.plano
         }).execute()
         return {"success": True, "usuario": r.data[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/login")
 def login(data: LoginData):
@@ -75,26 +71,20 @@ def login(data: LoginData):
         if not r.data:
             raise HTTPException(status_code=401, detail="Email ou senha incorretos")
         return {"success": True, "usuario": r.data[0]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ml/connect")
 def ml_connect(data: CodeData):
     try:
         r = requests.post("https://api.mercadolibre.com/oauth/token", data={
-            "grant_type": "authorization_code",
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "code": data.code,
-            "redirect_uri": REDIRECT_URI
+            "grant_type": "authorization_code", "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET, "code": data.code, "redirect_uri": REDIRECT_URI
         })
         td = r.json()
         if not td.get("access_token"):
             raise HTTPException(status_code=400, detail="Código inválido")
-        token = td["access_token"]
-        ml_uid = str(td["user_id"])
+        token = td["access_token"]; ml_uid = str(td["user_id"])
         r_user = requests.get(f"https://api.mercadolibre.com/users/{ml_uid}", headers={"Authorization": f"Bearer {token}"})
         nickname = r_user.json().get("nickname", ml_uid)
         existe = supabase.table("contas_ml").select("id").eq("usuario_id", data.usuario_id).eq("ml_user_id", ml_uid).execute()
@@ -103,17 +93,13 @@ def ml_connect(data: CodeData):
             supabase.table("contas_ml").update({"access_token": token, "ml_nickname": nickname}).eq("id", conta_id).execute()
         else:
             rc = supabase.table("contas_ml").insert({
-                "usuario_id": data.usuario_id,
-                "ml_user_id": ml_uid,
-                "ml_nickname": nickname,
-                "access_token": token
+                "usuario_id": data.usuario_id, "ml_user_id": ml_uid,
+                "ml_nickname": nickname, "access_token": token
             }).execute()
             conta_id = rc.data[0]["id"]
         return {"success": True, "access_token": token, "ml_user_id": ml_uid, "nickname": nickname, "conta_ml_id": conta_id}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/diagnostico/{user_id}")
 def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""):
@@ -199,7 +185,6 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
             if logistica not in ["fulfillment","xd_drop_off"]: sem_full += 1
         if estoque==0 and status=="active":
             itens_ruptura += 1; score_estoque -= 25
-            problemas.append("Ruptura com anúncio ativo")
             resultado["alertas"].append({"tipo":"CRITICO","categoria":"Estoque","mensagem":f"'{tc}' ATIVO com estoque ZERO.","acao":"Pause o anúncio imediatamente ou reponha estoque.","referencia":"Anúncio ativo sem estoque queima budget de ads"})
         elif estoque==0 and status=="closed" and vendas>0:
             score_estoque -= 10
@@ -252,8 +237,7 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
                 "score_publicidade": resultado["scores"]["publicidade"],
                 "status": resultado["status"], "alertas": resultado["alertas"], "metricas": resultado["metricas"]
             }).execute()
-        except:
-            pass
+        except: pass
 
     return resultado
 
@@ -261,8 +245,7 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
 def analisar_item(item_id: str, token: str, user_id: str):
     H = {"Authorization": f"Bearer {token}"}
     r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
-    if r.status_code != 200:
-        raise HTTPException(status_code=404, detail="Item não encontrado")
+    if r.status_code != 200: raise HTTPException(status_code=404, detail="Item não encontrado")
     item = r.json()
     titulo = item.get("title",""); preco = item.get("price",0)
     estoque = item.get("available_quantity",0); status = item.get("status","")
@@ -320,13 +303,117 @@ def analisar_item(item_id: str, token: str, user_id: str):
         "fotos":n_fotos,"logistica":logistica,"tipo_anuncio":tipo_anuncio,"score_total":score_total,
         "scores":scores,"acoes":acoes,"refs":refs,"pode_anunciar":estoque>0 and status=="active" and vendas>=1,"n_atributos":n_attrs}
 
+@app.get("/concorrentes/{item_id}")
+def concorrentes(item_id: str, token: str):
+    H = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
+    if r.status_code != 200: raise HTTPException(status_code=404, detail="Item não encontrado")
+    item = r.json()
+    categoria_id = item.get("category_id","")
+    titulo = item.get("title","")
+    preco_ref = item.get("price",0)
+
+    if not categoria_id: raise HTTPException(status_code=400, detail="Categoria não encontrada")
+
+    r_busca = requests.get(
+        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10",
+        headers=H
+    )
+    if r_busca.status_code != 200: raise HTTPException(status_code=500, detail="Erro ao buscar concorrentes")
+
+    resultados = r_busca.json().get("results", [])
+    concorrentes_lista = []
+
+    for c in resultados:
+        if c.get("id") == item_id: continue
+        seller = c.get("seller", {})
+        shipping = c.get("shipping", {})
+        logistica = shipping.get("logistic_type","")
+        concorrentes_lista.append({
+            "item_id": c.get("id"),
+            "titulo": c.get("title","")[:50],
+            "preco": c.get("price",0),
+            "vendas": c.get("sold_quantity",0),
+            "seller_nome": seller.get("nickname",""),
+            "seller_reputacao": seller.get("seller_reputation",{}).get("power_seller_status",""),
+            "logistica": "Full" if logistica=="fulfillment" else "Flex" if logistica=="xd_drop_off" else "Padrão",
+            "frete_gratis": shipping.get("free_shipping", False),
+            "diferenca_preco": round(c.get("price",0) - preco_ref, 2)
+        })
+        if len(concorrentes_lista) >= 5: break
+
+    return {
+        "item_id": item_id,
+        "titulo": titulo,
+        "preco_ref": preco_ref,
+        "categoria_id": categoria_id,
+        "concorrentes": concorrentes_lista
+    }
+
+@app.get("/promocoes/{user_id}")
+def promocoes(user_id: str, token: str):
+    H = {"Authorization": f"Bearer {token}"}
+    
+    r_itens = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search", headers=H)
+    item_ids = r_itens.json().get("results", [])
+    
+    promocoes_ativas = []
+    candidatos = []
+
+    for item_id in item_ids[:20]:
+        r_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
+        if r_item.status_code != 200: continue
+        item = r_item.json()
+        titulo = item.get("title","")[:45]
+        preco = item.get("price",0)
+        estoque = item.get("available_quantity",0)
+        vendas = item.get("sold_quantity",0)
+        status = item.get("status","")
+
+        r_promo = requests.get(
+            f"https://api.mercadolibre.com/seller-promotions/items/{item_id}?app_version=v2",
+            headers=H
+        )
+        if r_promo.status_code == 200:
+            promos = r_promo.json()
+            if isinstance(promos, list):
+                for p in promos:
+                    if p.get("status") in ["started","active"]:
+                        preco_promo = p.get("price",0)
+                        preco_orig = p.get("original_price", preco)
+                        desconto = round((1 - preco_promo/preco_orig)*100) if preco_orig > 0 else 0
+                        promocoes_ativas.append({
+                            "item_id": item_id,
+                            "titulo": titulo,
+                            "tipo": p.get("type",""),
+                            "status": p.get("status",""),
+                            "preco_original": preco_orig,
+                            "preco_promocional": preco_promo,
+                            "desconto_pct": desconto,
+                            "fim": p.get("finish_date","")[:10] if p.get("finish_date") else ""
+                        })
+
+        if status == "active" and estoque > 10 and vendas < 5:
+            candidatos.append({
+                "item_id": item_id,
+                "titulo": titulo,
+                "preco": preco,
+                "estoque": estoque,
+                "vendas": vendas,
+                "motivo": "Estoque alto com baixo giro — boa oportunidade para promoção"
+            })
+
+    return {
+        "promocoes_ativas": promocoes_ativas,
+        "candidatos_promocao": candidatos[:5]
+    }
+
 @app.get("/historico/{usuario_id}")
 def historico(usuario_id: str, conta_ml_id: str):
     try:
-        r = supabase.table("diagnosticos").select("score_total,criado_em").eq("usuario_id",usuario_id).eq("conta_ml_id",conta_ml_id).order("criado_em",desc=True).limit(6).execute()
+        r = supabase.table("diagnosticos").select("score_total,score_reputacao,score_operacao,score_estoque,score_atendimento,score_publicidade,criado_em").eq("usuario_id",usuario_id).eq("conta_ml_id",conta_ml_id).order("criado_em",desc=True).limit(6).execute()
         return {"data": r.data}
-    except:
-        return {"data": []}
+    except: return {"data": []}
 
 @app.post("/pagamento/criar")
 def criar_assinatura(data: AssinaturaData):
@@ -339,55 +426,18 @@ def criar_assinatura(data: AssinaturaData):
             headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
             json={
                 "reason": plano["nome"],
-                "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
-                    "transaction_amount": plano["valor"],
-                    "currency_id": "BRL"
-                },
+                "auto_recurring": {"frequency":1,"frequency_type":"months","transaction_amount":plano["valor"],"currency_id":"BRL"},
                 "back_url": "https://raioxseller-frontend.vercel.app",
                 "external_reference": f"{data.usuario_id}_{data.plano}"
             }
         )
         plano_data = r_plano.json()
         init_point = plano_data.get("init_point")
-        
         if not init_point:
             raise HTTPException(status_code=500, detail=f"Erro: {plano_data}")
-
         return {"success": True, "checkout_url": init_point}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-        r_ass = requests.post(
-            "https://api.mercadopago.com/preapproval",
-            headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
-            json={
-                "preapproval_plan_id": plano_id,
-                "reason": plano["nome"],
-                "payer_email": data.email,
-                "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
-                    "transaction_amount": plano["valor"],
-                    "currency_id": "BRL"
-                },
-                "back_url": "https://raioxseller-frontend.vercel.app",
-                "external_reference": f"{data.usuario_id}_{data.plano}"
-            }
-        )
-        ass_data = r_ass.json()
-        init_point = ass_data.get("init_point")
-        if not init_point:
-            raise HTTPException(status_code=500, detail=f"Erro ao criar assinatura: {ass_data}")
-
-        return {"success": True, "checkout_url": init_point, "assinatura_id": ass_data.get("id")}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/pagamento/webhook")
 async def webhook_pagamento(request: Request):
@@ -397,10 +447,7 @@ async def webhook_pagamento(request: Request):
         if tipo == "subscription_preapproval":
             ass_id = body.get("data", {}).get("id")
             if ass_id:
-                r = requests.get(
-                    f"https://api.mercadopago.com/preapproval/{ass_id}",
-                    headers={"Authorization": f"Bearer {MP_TOKEN}"}
-                )
+                r = requests.get(f"https://api.mercadopago.com/preapproval/{ass_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
                 ass = r.json()
                 status = ass.get("status")
                 ref = ass.get("external_reference", "")
@@ -408,9 +455,7 @@ async def webhook_pagamento(request: Request):
                     usuario_id, plano = ref.split("_", 1)
                     supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
         return {"status": "ok"}
-    except:
-        return {"status": "ok"}
+    except: return {"status": "ok"}
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(): return {"status": "ok"}
