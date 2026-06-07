@@ -1,13 +1,11 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from supabase import create_client
 import requests
 import hashlib
 import os
 from datetime import datetime
-from fastapi import Request
 
 app = FastAPI()
 
@@ -24,18 +22,33 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_YfRzYbb-YbKxMK1Ocd
 CLIENT_ID = os.environ.get("ML_CLIENT_ID", "8361153242610469")
 CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd")
 REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://httpbingo.org/get")
+MP_TOKEN = "TEST-717563241748022-060623-4ad997f3b63c9e541829c12ed3cbab25-165491273"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def hash_senha(s): return hashlib.sha256(s.encode()).hexdigest()
-def cor_score(s): return "red" if s < 60 else "yellow" if s < 80 else "green"
 
-# ============ AUTH ============
+PLANOS = {
+    "starter": {"nome": "RaioxSeller Starter", "valor": 97.00},
+    "pro": {"nome": "RaioxSeller Pro", "valor": 197.00},
+    "agencia": {"nome": "RaioxSeller Agência", "valor": 397.00}
+}
+
 class LoginData(BaseModel):
     email: str
     senha: str
     nome: str = ""
     plano: str = "starter"
+
+class CodeData(BaseModel):
+    code: str
+    usuario_id: str
+
+class AssinaturaData(BaseModel):
+    plano: str
+    usuario_id: str
+    email: str
+    nome: str = ""
 
 @app.post("/auth/register")
 def register(data: LoginData):
@@ -50,8 +63,10 @@ def register(data: LoginData):
             "plano": data.plano
         }).execute()
         return {"success": True, "usuario": r.data[0]}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/auth/login")
 def login(data: LoginData):
@@ -60,13 +75,10 @@ def login(data: LoginData):
         if not r.data:
             raise HTTPException(status_code=401, detail="Email ou senha incorretos")
         return {"success": True, "usuario": r.data[0]}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-# ============ ML AUTH ============
-class CodeData(BaseModel):
-    code: str
-    usuario_id: str
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ml/connect")
 def ml_connect(data: CodeData):
@@ -81,12 +93,10 @@ def ml_connect(data: CodeData):
         td = r.json()
         if not td.get("access_token"):
             raise HTTPException(status_code=400, detail="Código inválido")
-        
         token = td["access_token"]
         ml_uid = str(td["user_id"])
         r_user = requests.get(f"https://api.mercadolibre.com/users/{ml_uid}", headers={"Authorization": f"Bearer {token}"})
         nickname = r_user.json().get("nickname", ml_uid)
-
         existe = supabase.table("contas_ml").select("id").eq("usuario_id", data.usuario_id).eq("ml_user_id", ml_uid).execute()
         if existe.data:
             conta_id = existe.data[0]["id"]
@@ -99,115 +109,12 @@ def ml_connect(data: CodeData):
                 "access_token": token
             }).execute()
             conta_id = rc.data[0]["id"]
-
         return {"success": True, "access_token": token, "ml_user_id": ml_uid, "nickname": nickname, "conta_ml_id": conta_id}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-    # ============ PAGAMENTO ============
-MP_ACCESS_TOKEN_TEST = "TEST-717563241748022-060623-4ad997f3b63c9e541829c12ed3cbab25-165491273"
-MP_ACCESS_TOKEN_PROD = os.environ.get("MP_ACCESS_TOKEN_PROD", "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-PLANOS = {
-    "starter": {"nome": "RaioxSeller Starter", "valor": 97.00},
-    "pro": {"nome": "RaioxSeller Pro", "valor": 197.00},
-    "agencia": {"nome": "RaioxSeller Agência", "valor": 397.00}
-}
-
-class AssinaturaData(BaseModel):
-    plano: str
-    usuario_id: str
-    email: str
-    nome: str = ""
-
-@app.post("/pagamento/criar")
-def criar_assinatura(data: AssinaturaData):
-    if data.plano not in PLANOS:
-        raise HTTPException(status_code=400, detail="Plano inválido")
-    
-    plano = PLANOS[data.plano]
-    token = MP_ACCESS_TOKEN_TEST
-    
-    try:
-        # Cria plano de assinatura no MP
-        r_plano = requests.post(
-            "https://api.mercadopago.com/preapproval_plan",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "reason": plano["nome"],
-                "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
-                    "transaction_amount": plano["valor"],
-                    "currency_id": "BRL"
-                },
-                "payment_methods_allowed": {
-                    "payment_types": [{"id": "credit_card"}, {"id": "debit_card"}],
-                    "payment_methods": [{"id": "pix"}]
-                },
-                "back_url": "https://raioxseller-frontend.vercel.app/sucesso"
-            }
-        )
-        plano_data = r_plano.json()
-        plano_id = plano_data.get("id")
-        
-        if not plano_id:
-            raise HTTPException(status_code=500, detail=f"Erro ao criar plano: {plano_data}")
-        
-        # Cria assinatura para o usuário
-        r_ass = requests.post(
-            "https://api.mercadopago.com/preapproval",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "preapproval_plan_id": plano_id,
-                "reason": plano["nome"],
-                "payer_email": data.email,
-                "auto_recurring": {
-                    "frequency": 1,
-                    "frequency_type": "months",
-                    "transaction_amount": plano["valor"],
-                    "currency_id": "BRL"
-                },
-                "back_url": "https://raioxseller-frontend.vercel.app/sucesso",
-                "external_reference": f"{data.usuario_id}_{data.plano}"
-            }
-        )
-        ass_data = r_ass.json()
-        init_point = ass_data.get("init_point")
-        
-        if not init_point:
-            raise HTTPException(status_code=500, detail=f"Erro ao criar assinatura: {ass_data}")
-        
-        return {"success": True, "checkout_url": init_point, "assinatura_id": ass_data.get("id")}
-    
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/pagamento/webhook")
-    async def webhook_pagamento(request: Request):
-        try:
-            body = await request.json()
-            tipo = body.get("type")
-        
-        if tipo == "subscription_preapproval":
-            ass_id = body.get("data", {}).get("id")
-            if ass_id:
-                token = MP_ACCESS_TOKEN_TEST
-                r = requests.get(
-                    f"https://api.mercadopago.com/preapproval/{ass_id}",
-                    headers={"Authorization": f"Bearer {token}"}
-                )
-                ass = r.json()
-                status = ass.get("status")
-                ref = ass.get("external_reference", "")
-                
-                if "_" in ref and status == "authorized":
-                    usuario_id, plano = ref.split("_", 1)
-                    supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
-        
-        return {"status": "ok"}
-    except: return {"status": "ok"}
-
-# ============ DIAGNÓSTICO ============
 @app.get("/diagnostico/{user_id}")
 def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""):
     H = {"Authorization": f"Bearer {token}"}
@@ -217,7 +124,6 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
         "status": "", "alertas": [], "skus": [], "metricas": {},
         "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M")
     }
-
     r = requests.get(f"https://api.mercadolibre.com/users/{user_id}", headers=H)
     dados = r.json()
     resultado["seller"] = dados.get("nickname","")
@@ -334,7 +240,6 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
     resultado["status"] = "SAUDAVEL" if resultado["score_total"]>=80 else "ATENCAO" if resultado["score_total"]>=60 else "CRITICO"
     resultado["alertas"].sort(key=lambda x: {"CRITICO":0,"ATENCAO":1,"INFO":2}.get(x["tipo"],3))
 
-    # Salva no Supabase
     if conta_ml_id:
         try:
             supabase.table("diagnosticos").insert({
@@ -347,16 +252,17 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
                 "score_publicidade": resultado["scores"]["publicidade"],
                 "status": resultado["status"], "alertas": resultado["alertas"], "metricas": resultado["metricas"]
             }).execute()
-        except: pass
+        except:
+            pass
 
     return resultado
 
-# ============ ITEM ============
 @app.get("/item/{item_id}")
 def analisar_item(item_id: str, token: str, user_id: str):
     H = {"Authorization": f"Bearer {token}"}
     r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
-    if r.status_code != 200: raise HTTPException(status_code=404, detail="Item não encontrado")
+    if r.status_code != 200:
+        raise HTTPException(status_code=404, detail="Item não encontrado")
     item = r.json()
     titulo = item.get("title",""); preco = item.get("price",0)
     estoque = item.get("available_quantity",0); status = item.get("status","")
@@ -414,13 +320,89 @@ def analisar_item(item_id: str, token: str, user_id: str):
         "fotos":n_fotos,"logistica":logistica,"tipo_anuncio":tipo_anuncio,"score_total":score_total,
         "scores":scores,"acoes":acoes,"refs":refs,"pode_anunciar":estoque>0 and status=="active" and vendas>=1,"n_atributos":n_attrs}
 
-# ============ HISTÓRICO ============
 @app.get("/historico/{usuario_id}")
 def historico(usuario_id: str, conta_ml_id: str):
     try:
         r = supabase.table("diagnosticos").select("score_total,criado_em").eq("usuario_id",usuario_id).eq("conta_ml_id",conta_ml_id).order("criado_em",desc=True).limit(6).execute()
         return {"data": r.data}
-    except: return {"data": []}
+    except:
+        return {"data": []}
+
+@app.post("/pagamento/criar")
+def criar_assinatura(data: AssinaturaData):
+    if data.plano not in PLANOS:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+    plano = PLANOS[data.plano]
+    try:
+        r_plano = requests.post(
+            "https://api.mercadopago.com/preapproval_plan",
+            headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "reason": plano["nome"],
+                "auto_recurring": {
+                    "frequency": 1,
+                    "frequency_type": "months",
+                    "transaction_amount": plano["valor"],
+                    "currency_id": "BRL"
+                },
+                "back_url": "https://raioxseller-frontend.vercel.app"
+            }
+        )
+        plano_data = r_plano.json()
+        plano_id = plano_data.get("id")
+        if not plano_id:
+            raise HTTPException(status_code=500, detail=f"Erro ao criar plano: {plano_data}")
+
+        r_ass = requests.post(
+            "https://api.mercadopago.com/preapproval",
+            headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "preapproval_plan_id": plano_id,
+                "reason": plano["nome"],
+                "payer_email": data.email,
+                "auto_recurring": {
+                    "frequency": 1,
+                    "frequency_type": "months",
+                    "transaction_amount": plano["valor"],
+                    "currency_id": "BRL"
+                },
+                "back_url": "https://raioxseller-frontend.vercel.app",
+                "external_reference": f"{data.usuario_id}_{data.plano}"
+            }
+        )
+        ass_data = r_ass.json()
+        init_point = ass_data.get("init_point")
+        if not init_point:
+            raise HTTPException(status_code=500, detail=f"Erro ao criar assinatura: {ass_data}")
+
+        return {"success": True, "checkout_url": init_point, "assinatura_id": ass_data.get("id")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pagamento/webhook")
+async def webhook_pagamento(request: Request):
+    try:
+        body = await request.json()
+        tipo = body.get("type")
+        if tipo == "subscription_preapproval":
+            ass_id = body.get("data", {}).get("id")
+            if ass_id:
+                r = requests.get(
+                    f"https://api.mercadopago.com/preapproval/{ass_id}",
+                    headers={"Authorization": f"Bearer {MP_TOKEN}"}
+                )
+                ass = r.json()
+                status = ass.get("status")
+                ref = ass.get("external_reference", "")
+                if "_" in ref and status == "authorized":
+                    usuario_id, plano = ref.split("_", 1)
+                    supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
+        return {"status": "ok"}
+    except:
+        return {"status": "ok"}
 
 @app.get("/health")
-def health(): return {"status": "ok"}
+def health():
+    return {"status": "ok"}
