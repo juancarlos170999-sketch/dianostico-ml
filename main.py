@@ -319,9 +319,10 @@ def concorrentes(item_id: str, token: str):
     if not categoria_id:
         raise HTTPException(status_code=400, detail="Categoria não encontrada")
 
-    # Busca concorrentes sem autenticação
+  # Busca concorrentes com autenticação
     r_busca = requests.get(
-        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10"
+        f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=10",
+        headers=H
     )
     if r_busca.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar concorrentes: {r_busca.text}")
