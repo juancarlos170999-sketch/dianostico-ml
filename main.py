@@ -224,7 +224,59 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
     resultado["score_total"] = int(sum(resultado["scores"][k]*v for k,v in pesos.items()))
     resultado["status"] = "SAUDAVEL" if resultado["score_total"]>=80 else "ATENCAO" if resultado["score_total"]>=60 else "CRITICO"
     resultado["alertas"].sort(key=lambda x: {"CRITICO":0,"ATENCAO":1,"INFO":2}.get(x["tipo"],3))
+    # Estimativa de receita perdida
+    ticket_medio = 0
+    receita_perdida = 0
+    receita_60d = 0
 
+    if item_ids and vendas_60d > 0:
+        precos = []
+        for sku in resultado["skus"]:
+            if sku["preco"] > 0 and sku["vendas"] > 0:
+                precos.append(sku["preco"])
+        if precos:
+            ticket_medio = sum(precos) / len(precos)
+            receita_60d = ticket_medio * vendas_60d
+            receita_mensal = receita_60d / 2
+
+            perda_reputacao = 0
+            perda_operacao = 0
+            perda_estoque = 0
+            perda_atendimento = 0
+
+            # Reputação amarela = -30% de visibilidade = -30% de vendas potenciais
+            if nivel == "3_yellow":
+                perda_reputacao = receita_mensal * 0.30
+            elif nivel in ["2_orange", "1_red"]:
+                perda_reputacao = receita_mensal * 0.50
+
+            # Atraso acima de 10% = -20% de vendas
+            if taxa_atraso > 0.10:
+                perda_operacao = receita_mensal * 0.20
+            elif taxa_atraso > 0.05:
+                perda_operacao = receita_mensal * 0.10
+
+            # Cada item em ruptura = perda direta
+            for sku in resultado["skus"]:
+                if sku["estoque"] == 0 and sku["status"] == "active":
+                    perda_estoque += sku["preco"] * 15  # 15 vendas/mês estimadas
+
+            # Perguntas sem resposta = -5% por pergunta acima de 3
+            if perguntas > 3:
+                perda_atendimento = receita_mensal * min((perguntas - 3) * 0.05, 0.20)
+
+            receita_perdida = perda_reputacao + perda_operacao + perda_estoque + perda_atendimento
+
+            resultado["metricas"]["receita"] = {
+                "ticket_medio": round(ticket_medio, 2),
+                "vendas_60d": vendas_60d,
+                "receita_mensal_estimada": round(receita_mensal, 2),
+                "receita_perdida_estimada": round(receita_perdida, 2),
+                "perda_reputacao": round(perda_reputacao, 2),
+                "perda_operacao": round(perda_operacao, 2),
+                "perda_estoque": round(perda_estoque, 2),
+                "perda_atendimento": round(perda_atendimento, 2)
+            }
     if conta_ml_id:
         try:
             supabase.table("diagnosticos").insert({
