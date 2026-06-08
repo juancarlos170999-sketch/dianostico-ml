@@ -107,7 +107,10 @@ def login(data: LoginData):
         r = supabase.table("usuarios").select("*").eq("email", data.email).eq("senha_hash", hash_senha(data.senha)).execute()
         if not r.data:
             raise HTTPException(status_code=401, detail="Email ou senha incorretos")
-        return {"success": True, "usuario": r.data[0]}
+        usuario = r.data[0]
+        if usuario.get("acesso_bloqueado"):
+            raise HTTPException(status_code=403, detail="Acesso bloqueado por inadimplência. Atualize seu pagamento para continuar.")
+        return {"success": True, "usuario": usuario}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
@@ -621,25 +624,60 @@ async def webhook_pagamento(request: Request):
             body = await request.json()
 
         tipo = body.get("type")
-        if tipo in ("subscription_preapproval", "subscription_authorized_payment"):
-            ass_id = body.get("data", {}).get("id")
-            if ass_id:
-                r = requests.get(f"https://api.mercadopago.com/preapproval/{ass_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
-                ass = r.json()
-                status = ass.get("status")
+        ass_id = body.get("data", {}).get("id")
+
+        if tipo == "subscription_preapproval" and ass_id:
+            r = requests.get(f"https://api.mercadopago.com/preapproval/{ass_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
+            ass = r.json()
+            status = ass.get("status")
+            ref = ass.get("external_reference", "")
+            if "_" in ref:
+                usuario_id, plano = ref.split("_", 1)
+                if status == "authorized":
+                    # Pagamento autorizado — libera o plano
+                    supabase.table("usuarios").update({
+                        "plano": plano,
+                        "mp_preapproval_id": ass_id,
+                        "acesso_bloqueado": False
+                    }).eq("id", usuario_id).execute()
+                elif status in ("cancelled",):
+                    # Cancelado — baixa plano e libera o preapproval_id
+                    supabase.table("usuarios").update({
+                        "plano": "starter",
+                        "mp_preapproval_id": None,
+                        "acesso_bloqueado": False
+                    }).eq("id", usuario_id).execute()
+                elif status == "paused":
+                    # Pausado (inadimplência) — bloqueia acesso mas mantém registro
+                    supabase.table("usuarios").update({
+                        "plano": "starter",
+                        "acesso_bloqueado": True
+                    }).eq("id", usuario_id).execute()
+
+        elif tipo == "subscription_authorized_payment" and ass_id:
+            # Pagamento recorrente mensal confirmado — garante acesso ativo
+            r = requests.get(f"https://api.mercadopago.com/authorized_payments/{ass_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
+            pag = r.json()
+            status = pag.get("status")
+            preapproval_id = pag.get("preapproval_id")
+            if preapproval_id:
+                r2 = requests.get(f"https://api.mercadopago.com/preapproval/{preapproval_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
+                ass = r2.json()
                 ref = ass.get("external_reference", "")
                 if "_" in ref:
                     usuario_id, plano = ref.split("_", 1)
-                    if status == "authorized":
+                    if status == "approved":
                         supabase.table("usuarios").update({
                             "plano": plano,
-                            "mp_preapproval_id": ass_id
+                            "acesso_bloqueado": False
                         }).eq("id", usuario_id).execute()
-                    elif status in ("cancelled", "paused"):
+                    elif status in ("rejected", "cancelled"):
+                        # Pagamento recusado — bloqueia acesso imediatamente
                         supabase.table("usuarios").update({
-                            "plano": "starter",
-                            "mp_preapproval_id": None
+                            "acesso_bloqueado": True,
+                            "plano": "starter"
                         }).eq("id", usuario_id).execute()
+
         return {"status": "ok"}
     except: return {"status": "ok"}
 
