@@ -631,9 +631,15 @@ async def webhook_pagamento(request: Request):
                 if "_" in ref:
                     usuario_id, plano = ref.split("_", 1)
                     if status == "authorized":
-                        supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
+                        supabase.table("usuarios").update({
+                            "plano": plano,
+                            "mp_preapproval_id": ass_id
+                        }).eq("id", usuario_id).execute()
                     elif status in ("cancelled", "paused"):
-                        supabase.table("usuarios").update({"plano": "starter"}).eq("id", usuario_id).execute()
+                        supabase.table("usuarios").update({
+                            "plano": "starter",
+                            "mp_preapproval_id": None
+                        }).eq("id", usuario_id).execute()
         return {"status": "ok"}
     except: return {"status": "ok"}
 
@@ -643,9 +649,29 @@ class CancelData(BaseModel):
 @app.post("/pagamento/cancelar")
 def cancelar_plano(data: CancelData):
     try:
-        supabase.table("usuarios").update({"plano": "starter"}).eq("id", data.usuario_id).execute()
-        return {"success": True}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+        # Busca o preapproval_id salvo
+        r = supabase.table("usuarios").select("mp_preapproval_id").eq("id", data.usuario_id).execute()
+        preapproval_id = r.data[0].get("mp_preapproval_id") if r.data else None
+
+        # Cancela a assinatura no Mercado Pago
+        mp_cancelado = False
+        if preapproval_id and MP_TOKEN:
+            r_mp = requests.put(
+                f"https://api.mercadopago.com/preapproval/{preapproval_id}",
+                headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
+                json={"status": "cancelled"}
+            )
+            mp_cancelado = r_mp.status_code == 200
+
+        # Baixa o plano no Supabase independente do resultado no MP
+        supabase.table("usuarios").update({
+            "plano": "starter",
+            "mp_preapproval_id": None
+        }).eq("id", data.usuario_id).execute()
+
+        return {"success": True, "mp_cancelado": mp_cancelado}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 def health(): return {"status": "ok"}
