@@ -118,7 +118,7 @@ def ml_connect(data: CodeData):
         })
         td = r.json()
         if not td.get("access_token"):
-            raise HTTPException(status_code=400, detail="Código inválido")
+            raise HTTPException(status_code=400, detail=f"Código inválido: {td.get('message','')  or td.get('error','') or str(td)}")
         token = td["access_token"]
         refresh_token = td.get("refresh_token", "")
         ml_uid = str(td["user_id"])
