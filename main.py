@@ -598,11 +598,18 @@ def historico(usuario_id: str, conta_ml_id: str):
     except Exception as e:
         return {"historico": [], "erro": str(e)}
 
+@app.get("/pagamento/debug-token")
+def debug_token():
+    if not MP_TOKEN:
+        return {"token": None, "inicio": None}
+    return {"token_inicio": MP_TOKEN[:12], "token_fim": MP_TOKEN[-6:], "tamanho": len(MP_TOKEN)}
+
 @app.post("/pagamento/criar")
 def criar_assinatura(data: AssinaturaData):
     if data.plano not in PLANOS:
         raise HTTPException(status_code=400, detail="Plano inválido")
     plano = PLANOS[data.plano]
+    print(f"[DEBUG] MP_TOKEN inicio: {MP_TOKEN[:12] if MP_TOKEN else 'NONE'}")
     try:
         r_plano = requests.post(
             "https://api.mercadopago.com/preapproval",
