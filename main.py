@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from supabase import create_client
 import requests
 import hashlib
+import hmac
 import os
 from datetime import datetime
 
@@ -23,6 +24,7 @@ CLIENT_ID = os.environ.get("ML_CLIENT_ID", "8361153242610469")
 CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd")
 REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://raioxseller-frontend.vercel.app/callback")
 MP_TOKEN = os.environ.get("MP_TOKEN")
+MP_WEBHOOK_SECRET = os.environ.get("MP_WEBHOOK_SECRET")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -601,18 +603,37 @@ def criar_assinatura(data: AssinaturaData):
 @app.post("/pagamento/webhook")
 async def webhook_pagamento(request: Request):
     try:
-        body = await request.json()
+        # Valida assinatura secreta do MP
+        if MP_WEBHOOK_SECRET:
+            ts = request.headers.get("x-signature", "").split(",")
+            ts_val = next((p.split("=")[1] for p in ts if p.startswith("ts=")), "")
+            sig_val = next((p.split("=")[1] for p in ts if p.startswith("v1=")), "")
+            if ts_val and sig_val:
+                raw_body = await request.body()
+                manifest = f"id={request.query_params.get('data.id','')};request-id={request.headers.get('x-request-id','')};ts={ts_val};"
+                expected = hmac.new(MP_WEBHOOK_SECRET.encode(), manifest.encode(), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(expected, sig_val):
+                    return {"status": "invalid signature"}
+                body = __import__('json').loads(raw_body)
+            else:
+                body = await request.json()
+        else:
+            body = await request.json()
+
         tipo = body.get("type")
-        if tipo == "subscription_preapproval":
+        if tipo in ("subscription_preapproval", "subscription_authorized_payment"):
             ass_id = body.get("data", {}).get("id")
             if ass_id:
                 r = requests.get(f"https://api.mercadopago.com/preapproval/{ass_id}", headers={"Authorization": f"Bearer {MP_TOKEN}"})
                 ass = r.json()
                 status = ass.get("status")
                 ref = ass.get("external_reference", "")
-                if "_" in ref and status == "authorized":
+                if "_" in ref:
                     usuario_id, plano = ref.split("_", 1)
-                    supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
+                    if status == "authorized":
+                        supabase.table("usuarios").update({"plano": plano}).eq("id", usuario_id).execute()
+                    elif status in ("cancelled", "paused"):
+                        supabase.table("usuarios").update({"plano": "starter"}).eq("id", usuario_id).execute()
         return {"status": "ok"}
     except: return {"status": "ok"}
 
