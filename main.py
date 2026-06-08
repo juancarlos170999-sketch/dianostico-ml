@@ -6,7 +6,7 @@ import requests
 import hashlib
 import hmac
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 app = FastAPI()
 
@@ -108,8 +108,25 @@ def login(data: LoginData):
         if not r.data:
             raise HTTPException(status_code=401, detail="Email ou senha incorretos")
         usuario = r.data[0]
+
+        # Bloqueado por inadimplência
         if usuario.get("acesso_bloqueado"):
             raise HTTPException(status_code=403, detail="Acesso bloqueado por inadimplência. Atualize seu pagamento para continuar.")
+
+        # Cancelamento pendente — verifica se o período pago já expirou
+        if usuario.get("cancelamento_pendente") and usuario.get("vencimento_em"):
+            try:
+                vencimento = datetime.fromisoformat(usuario["vencimento_em"].replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) >= vencimento:
+                    supabase.table("usuarios").update({
+                        "plano": "starter",
+                        "cancelamento_pendente": False,
+                        "vencimento_em": None
+                    }).eq("id", usuario["id"]).execute()
+                    usuario["plano"] = "starter"
+                    usuario["cancelamento_pendente"] = False
+            except: pass
+
         return {"success": True, "usuario": usuario}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
@@ -634,11 +651,16 @@ async def webhook_pagamento(request: Request):
             if "_" in ref:
                 usuario_id, plano = ref.split("_", 1)
                 if status == "authorized":
+                    # Calcula próximo vencimento (30 dias a partir de hoje)
+                    from datetime import timedelta
+                    proximo_vencimento = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
                     # Pagamento autorizado — libera o plano
                     supabase.table("usuarios").update({
                         "plano": plano,
                         "mp_preapproval_id": ass_id,
-                        "acesso_bloqueado": False
+                        "acesso_bloqueado": False,
+                        "cancelamento_pendente": False,
+                        "vencimento_em": proximo_vencimento
                     }).eq("id", usuario_id).execute()
                 elif status in ("cancelled",):
                     # Cancelado — baixa plano e libera o preapproval_id
@@ -667,9 +689,13 @@ async def webhook_pagamento(request: Request):
                 if "_" in ref:
                     usuario_id, plano = ref.split("_", 1)
                     if status == "approved":
+                        from datetime import timedelta
+                        proximo_vencimento = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
                         supabase.table("usuarios").update({
                             "plano": plano,
-                            "acesso_bloqueado": False
+                            "acesso_bloqueado": False,
+                            "cancelamento_pendente": False,
+                            "vencimento_em": proximo_vencimento
                         }).eq("id", usuario_id).execute()
                     elif status in ("rejected", "cancelled"):
                         # Pagamento recusado — bloqueia acesso imediatamente
@@ -687,11 +713,12 @@ class CancelData(BaseModel):
 @app.post("/pagamento/cancelar")
 def cancelar_plano(data: CancelData):
     try:
-        # Busca o preapproval_id salvo
-        r = supabase.table("usuarios").select("mp_preapproval_id").eq("id", data.usuario_id).execute()
-        preapproval_id = r.data[0].get("mp_preapproval_id") if r.data else None
+        r = supabase.table("usuarios").select("mp_preapproval_id, vencimento_em").eq("id", data.usuario_id).execute()
+        usuario = r.data[0] if r.data else {}
+        preapproval_id = usuario.get("mp_preapproval_id")
+        vencimento_em = usuario.get("vencimento_em")
 
-        # Cancela a assinatura no Mercado Pago
+        # Cancela a renovação automática no Mercado Pago (não cobra mais)
         mp_cancelado = False
         if preapproval_id and MP_TOKEN:
             r_mp = requests.put(
@@ -701,13 +728,18 @@ def cancelar_plano(data: CancelData):
             )
             mp_cancelado = r_mp.status_code == 200
 
-        # Baixa o plano no Supabase independente do resultado no MP
+        # Marca cancelamento pendente — acesso continua até o vencimento
         supabase.table("usuarios").update({
-            "plano": "starter",
+            "cancelamento_pendente": True,
             "mp_preapproval_id": None
         }).eq("id", data.usuario_id).execute()
 
-        return {"success": True, "mp_cancelado": mp_cancelado}
+        return {
+            "success": True,
+            "mp_cancelado": mp_cancelado,
+            "acesso_ate": vencimento_em,
+            "mensagem": "Sua assinatura foi cancelada. Você continua com acesso até o fim do período pago."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
