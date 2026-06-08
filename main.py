@@ -20,13 +20,47 @@ app.add_middleware(
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://mfyabqodkjbpvykfkiwj.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_YfRzYbb-YbKxMK1OcdvRKA_OrhdjIt1")
 CLIENT_ID = os.environ.get("ML_CLIENT_ID", "8361153242610469")
-CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET", "3o8z0V9ogn90pA3Gr6hCLUdJC1TYi1Pd")
+CLIENT_SECRET = os.environ.get("ML_CLIENT_SECRET")
 REDIRECT_URI = os.environ.get("REDIRECT_URI", "https://raioxseller-frontend.vercel.app/callback")
-MP_TOKEN = "TEST-717563241748022-060623-4ad997f3b63c9e541829c12ed3cbab25-165491273"
+MP_TOKEN = os.environ.get("MP_TOKEN")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def hash_senha(s): return hashlib.sha256(s.encode()).hexdigest()
+
+def renovar_token(conta_ml_id: str):
+    """Usa o refresh_token para obter um novo access_token e salva no Supabase."""
+    try:
+        r = supabase.table("contas_ml").select("refresh_token").eq("id", conta_ml_id).execute()
+        if not r.data or not r.data[0].get("refresh_token"):
+            return None
+        refresh_token = r.data[0]["refresh_token"]
+        resp = requests.post("https://api.mercadolibre.com/oauth/token", data={
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "refresh_token": refresh_token
+        })
+        td = resp.json()
+        novo_token = td.get("access_token")
+        novo_refresh = td.get("refresh_token", refresh_token)
+        if not novo_token:
+            return None
+        supabase.table("contas_ml").update({
+            "access_token": novo_token,
+            "refresh_token": novo_refresh
+        }).eq("id", conta_ml_id).execute()
+        return novo_token
+    except:
+        return None
+
+def get_token_valido(token: str, conta_ml_id: str) -> str:
+    """Testa o token atual; se expirado, renova automaticamente."""
+    r = requests.get("https://api.mercadolibre.com/users/me", headers={"Authorization": f"Bearer {token}"})
+    if r.status_code == 401 and conta_ml_id:
+        novo = renovar_token(conta_ml_id)
+        return novo if novo else token
+    return token
 
 PLANOS = {
     "starter": {"nome": "RaioxSeller Starter", "valor": 97.00},
@@ -85,25 +119,38 @@ def ml_connect(data: CodeData):
         td = r.json()
         if not td.get("access_token"):
             raise HTTPException(status_code=400, detail="Código inválido")
-        token = td["access_token"]; ml_uid = str(td["user_id"])
+        token = td["access_token"]
+        refresh_token = td.get("refresh_token", "")
+        ml_uid = str(td["user_id"])
         r_user = requests.get(f"https://api.mercadolibre.com/users/{ml_uid}", headers={"Authorization": f"Bearer {token}"})
         nickname = r_user.json().get("nickname", ml_uid)
         existe = supabase.table("contas_ml").select("id").eq("usuario_id", data.usuario_id).eq("ml_user_id", ml_uid).execute()
         if existe.data:
             conta_id = existe.data[0]["id"]
-            supabase.table("contas_ml").update({"access_token": token, "ml_nickname": nickname}).eq("id", conta_id).execute()
+            supabase.table("contas_ml").update({"access_token": token, "refresh_token": refresh_token, "ml_nickname": nickname}).eq("id", conta_id).execute()
         else:
             rc = supabase.table("contas_ml").insert({
                 "usuario_id": data.usuario_id, "ml_user_id": ml_uid,
-                "ml_nickname": nickname, "access_token": token
+                "ml_nickname": nickname, "access_token": token, "refresh_token": refresh_token
             }).execute()
             conta_id = rc.data[0]["id"]
         return {"success": True, "access_token": token, "ml_user_id": ml_uid, "nickname": nickname, "conta_ml_id": conta_id}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
+class RefreshData(BaseModel):
+    conta_ml_id: str
+
+@app.post("/ml/refresh")
+def ml_refresh(data: RefreshData):
+    novo_token = renovar_token(data.conta_ml_id)
+    if not novo_token:
+        raise HTTPException(status_code=400, detail="Não foi possível renovar o token.")
+    return {"success": True, "access_token": novo_token}
+
 @app.get("/diagnostico/{user_id}")
 def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""):
+    token = get_token_valido(token, conta_ml_id)
     H = {"Authorization": f"Bearer {token}"}
     resultado = {
         "seller": "", "nivel": "", "mercadolider": "", "score_total": 100,
@@ -201,20 +248,32 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
     if sem_full>0:
         resultado["alertas"].append({"tipo":"ATENCAO","categoria":"Logística","mensagem":f"{sem_full} itens ativos sem Full ou Flex.","acao":"Ative Full nos top SKUs para triplicar chances de venda.","referencia":"Full = 3x mais chances de venda + prioridade no algoritmo"})
 
-    r_adv = requests.get("https://api.mercadolibre.com/advertising/advertisers?product_id=PADS", headers={**H,"Api-Version":"1"})
+    ADS_HEADERS = {**H, "Api-Version": "2"}
+    r_adv = requests.get("https://api.mercadolibre.com/advertising/advertisers?product_id=PADS", headers=ADS_HEADERS)
     score_ads = 50
-    if r_adv.status_code==200:
-        advertisers = r_adv.json().get("advertisers",[])
+    resultado["metricas"]["publicidade"] = {"sem_ads": True, "campanhas": []}
+    if r_adv.status_code == 200:
+        advertisers = r_adv.json().get("advertisers", [])
         if advertisers:
             score_ads = 100
+            resultado["metricas"]["publicidade"]["sem_ads"] = False
             adv_id = advertisers[0].get("advertiser_id")
             hoje = datetime.now()
-            r_camp = requests.get(f"https://api.mercadolibre.com/advertising/advertisers/{adv_id}/product_ads/campaigns/search?date_from={hoje.year}-01-01&date_to={hoje.strftime('%Y-%m-%d')}&metrics=clicks,cost,roas", headers={**H,"Api-Version":"2"})
-            if r_camp.status_code==200:
-                for c in r_camp.json().get("campaigns",[]):
-                    roas = c.get("metrics",{}).get("roas",0) or 0
-                    nome = c.get("name","Campanha")
-                    if roas and roas<3:
+            date_from = f"{hoje.year}-01-01"
+            date_to = hoje.strftime("%Y-%m-%d")
+            r_camp = requests.get(
+                f"https://api.mercadolibre.com/advertising/advertisers/{adv_id}/product_ads/campaigns/search"
+                f"?date_from={date_from}&date_to={date_to}&metrics=clicks,cost,roas",
+                headers=ADS_HEADERS
+            )
+            if r_camp.status_code == 200:
+                campanhas = r_camp.json().get("campaigns", r_camp.json() if isinstance(r_camp.json(), list) else [])
+                for c in campanhas:
+                    metrics = c.get("metrics") or c.get("summary") or {}
+                    roas = metrics.get("roas") or metrics.get("return_on_ad_spend") or 0
+                    nome = c.get("name", "Campanha")
+                    resultado["metricas"]["publicidade"]["campanhas"].append({"nome": nome, "roas": round(roas, 1)})
+                    if roas and roas < 3:
                         score_ads -= 20
                         resultado["alertas"].append({"tipo":"CRITICO","categoria":"Publicidade","mensagem":f"Campanha '{nome}': ROAS {round(roas,1)}x — abaixo do mínimo.","acao":"Pause itens sem conversão. ROAS mínimo = 100 / margem%.","referencia":"Desde out/2025 o ML usa ROAS como métrica principal"})
         else:
@@ -490,9 +549,30 @@ def promocoes(user_id: str, token: str):
 @app.get("/historico/{usuario_id}")
 def historico(usuario_id: str, conta_ml_id: str):
     try:
-        r = supabase.table("diagnosticos").select("score_total,score_reputacao,score_operacao,score_estoque,score_atendimento,score_publicidade,criado_em").eq("usuario_id",usuario_id).eq("conta_ml_id",conta_ml_id).order("criado_em",desc=True).limit(6).execute()
-        return {"data": r.data}
-    except: return {"data": []}
+        r = supabase.table("diagnosticos").select(
+            "score_total,score_reputacao,score_operacao,score_estoque,score_atendimento,score_publicidade,status,metricas,criado_em"
+        ).eq("usuario_id", usuario_id).eq("conta_ml_id", conta_ml_id).order("criado_em", desc=False).limit(10).execute()
+        historico_fmt = []
+        for d in r.data:
+            metricas = d.get("metricas") or {}
+            receita = metricas.get("receita") or {}
+            historico_fmt.append({
+                "criado_em": d["criado_em"],
+                "score_total": d["score_total"],
+                "scores": {
+                    "reputacao": d.get("score_reputacao", 0),
+                    "operacao": d.get("score_operacao", 0),
+                    "estoque": d.get("score_estoque", 0),
+                    "atendimento": d.get("score_atendimento", 0),
+                    "publicidade": d.get("score_publicidade", 0),
+                },
+                "receita_perdida_estimada": receita.get("receita_perdida_estimada", 0),
+                "faturamento_estimado": receita.get("receita_mensal_estimada", 0),
+                "alertas_criticos": sum(1 for a in (metricas.get("alertas") or []) if a.get("tipo") == "CRITICO"),
+            })
+        return {"historico": historico_fmt}
+    except Exception as e:
+        return {"historico": [], "erro": str(e)}
 
 @app.post("/pagamento/criar")
 def criar_assinatura(data: AssinaturaData):
