@@ -118,13 +118,15 @@ def login(data: LoginData):
             try:
                 vencimento = datetime.fromisoformat(usuario["vencimento_em"].replace("Z", "+00:00"))
                 if datetime.now(timezone.utc) >= vencimento:
+                    # Período expirou — bloqueia acesso, não pagou o próximo mês
                     supabase.table("usuarios").update({
                         "plano": "starter",
                         "cancelamento_pendente": False,
-                        "vencimento_em": None
+                        "vencimento_em": None,
+                        "acesso_bloqueado": True
                     }).eq("id", usuario["id"]).execute()
-                    usuario["plano"] = "starter"
-                    usuario["cancelamento_pendente"] = False
+                    raise HTTPException(status_code=403, detail="Seu período de acesso expirou. Assine novamente para continuar usando o RaioxSeller.")
+            except HTTPException: raise
             except: pass
 
         return {"success": True, "usuario": usuario}
