@@ -369,24 +369,38 @@ def concorrentes(item_id: str, token: str):
     preco_ref = item.get("price",0)
     categoria_id = item.get("category_id","")
 
-    # Busca top itens da categoria via endpoint de categorias
+    item_ids = []
+
+    # Tentativa 1: best sellers da categoria (requer certificação, pode falhar)
     r_cat = requests.get(
         f"https://api.mercadolibre.com/categories/{categoria_id}/best_sellers",
         headers=H
     )
-    
     if r_cat.status_code == 200:
         best_sellers = r_cat.json()
-        item_ids = [bs.get("item_id") for bs in best_sellers[:8] if bs.get("item_id") and bs.get("item_id") != item_id]
-    else:
-        # Fallback: busca itens similares via catalog
+        item_ids = [bs.get("item_id") for bs in best_sellers[:10] if bs.get("item_id") and bs.get("item_id") != item_id]
+
+    # Tentativa 2: search por categoria ordenado por vendas
+    if not item_ids:
         r_cat2 = requests.get(
-            f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&limit=10",
+            f"https://api.mercadolibre.com/sites/MLB/search?category={categoria_id}&sort=sold_quantity_desc&limit=12",
             headers=H
         )
-        if r_cat2.status_code != 200:
-            raise HTTPException(status_code=500, detail="Não foi possível buscar concorrentes. O ML restringe essa busca para apps não certificados.")
-        item_ids = [c.get("id") for c in r_cat2.json().get("results",[]) if c.get("id") != item_id][:8]
+        if r_cat2.status_code == 200:
+            item_ids = [c.get("id") for c in r_cat2.json().get("results", []) if c.get("id") != item_id][:10]
+
+    # Tentativa 3: search por título do produto (mais permissivo)
+    if not item_ids:
+        palavras = " ".join(titulo.split()[:5])
+        r_titulo = requests.get(
+            f"https://api.mercadolibre.com/sites/MLB/search?q={requests.utils.quote(palavras)}&sort=sold_quantity_desc&limit=12",
+            headers=H
+        )
+        if r_titulo.status_code == 200:
+            item_ids = [c.get("id") for c in r_titulo.json().get("results", []) if c.get("id") != item_id][:10]
+
+    if not item_ids:
+        raise HTTPException(status_code=500, detail="Não foi possível encontrar concorrentes para este produto.")
 
     concorrentes_lista = []
     for cid in item_ids[:8]:
