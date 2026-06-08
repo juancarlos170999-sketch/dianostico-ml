@@ -605,19 +605,26 @@ def criar_assinatura(data: AssinaturaData):
     plano = PLANOS[data.plano]
     try:
         r_plano = requests.post(
-            "https://api.mercadopago.com/preapproval_plan",
+            "https://api.mercadopago.com/preapproval",
             headers={"Authorization": f"Bearer {MP_TOKEN}", "Content-Type": "application/json"},
             json={
                 "reason": plano["nome"],
-                "auto_recurring": {"frequency":1,"frequency_type":"months","transaction_amount":plano["valor"],"currency_id":"BRL"},
+                "external_reference": f"{data.usuario_id}_{data.plano}",
+                "payer_email": data.email,
+                "auto_recurring": {
+                    "frequency": 1,
+                    "frequency_type": "months",
+                    "transaction_amount": plano["valor"],
+                    "currency_id": "BRL"
+                },
                 "back_url": "https://raioxseller-frontend.vercel.app",
-                "external_reference": f"{data.usuario_id}_{data.plano}"
+                "status": "pending"
             }
         )
         plano_data = r_plano.json()
         init_point = plano_data.get("init_point")
         if not init_point:
-            raise HTTPException(status_code=500, detail=f"Erro: {plano_data}")
+            raise HTTPException(status_code=500, detail=f"Erro MP: {plano_data}")
         return {"success": True, "checkout_url": init_point}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
