@@ -617,7 +617,6 @@ def criar_assinatura(data: AssinaturaData):
             json={
                 "reason": plano["nome"],
                 "external_reference": f"{data.usuario_id}_{data.plano}",
-                "payer_email": data.email,
                 "auto_recurring": {
                     "frequency": 1,
                     "frequency_type": "months",
