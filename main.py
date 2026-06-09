@@ -570,6 +570,146 @@ def promocoes(user_id: str, token: str):
         "candidatos_promocao": candidatos[:5]
     }
 
+@app.get("/ml/curva-abc")
+def curva_abc(conta_ml_id: str, token: str):
+    try:
+        token = get_token_valido(token, conta_ml_id)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Busca user_id do vendedor
+        r_me = requests.get("https://api.mercadolibre.com/users/me", headers=headers)
+        user_id = r_me.json().get("id")
+        if not user_id:
+            return {"erro": "Token inválido"}
+
+        # 2. Busca todos os itens ativos (paginado)
+        itens = []
+        offset = 0
+        while True:
+            r_items = requests.get(
+                f"https://api.mercadolibre.com/users/{user_id}/items/search?status=active&limit=100&offset={offset}",
+                headers=headers
+            )
+            data = r_items.json()
+            ids = data.get("results", [])
+            itens.extend(ids)
+            if len(ids) < 100 or len(itens) >= 500:
+                break
+            offset += 100
+
+        if not itens:
+            return {"curva_a": [], "curva_b": [], "curva_c": [], "resumo": {}}
+
+        # 3. Busca pedidos dos últimos 90 dias para calcular receita por item
+        from datetime import timedelta
+        data_inicio = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
+        receita_por_item = {}
+        vendas_por_item = {}
+        offset_orders = 0
+        while True:
+            r_orders = requests.get(
+                f"https://api.mercadolibre.com/orders/search?seller={user_id}&order.status=paid&order.date_created.from={data_inicio}&limit=50&offset={offset_orders}",
+                headers=headers
+            )
+            orders_data = r_orders.json()
+            orders = orders_data.get("results", [])
+            if not orders:
+                break
+            for order in orders:
+                for item in order.get("order_items", []):
+                    iid = item.get("item", {}).get("id", "")
+                    qty = item.get("quantity", 0)
+                    price = item.get("unit_price", 0)
+                    if iid:
+                        receita_por_item[iid] = receita_por_item.get(iid, 0) + (qty * price)
+                        vendas_por_item[iid] = vendas_por_item.get(iid, 0) + qty
+            if len(orders) < 50:
+                break
+            offset_orders += 50
+            if offset_orders >= 500:
+                break
+
+        # 4. Detalhes dos itens em lote (máx 20 por chamada)
+        detalhes_map = {}
+        for i in range(0, min(len(itens), 200), 20):
+            batch = itens[i:i+20]
+            ids_str = ",".join(batch)
+            r_det = requests.get(
+                f"https://api.mercadolibre.com/items?ids={ids_str}&attributes=id,title,price,thumbnail,shipping,status",
+                headers=headers
+            )
+            for entry in r_det.json():
+                body = entry.get("body", {})
+                if body.get("id"):
+                    detalhes_map[body["id"]] = body
+
+        # 5. Tenta buscar campanhas de Ads (falha silenciosa se não tiver permissão)
+        itens_em_campanha = set()
+        try:
+            r_ads = requests.get(
+                f"https://api.mercadolibre.com/advertising/product_ads/search?seller_id={user_id}&status=active&limit=100",
+                headers=headers
+            )
+            if r_ads.status_code == 200:
+                for ad in r_ads.json().get("results", []):
+                    iid = ad.get("item_id") or ad.get("sku")
+                    if iid:
+                        itens_em_campanha.add(str(iid))
+        except:
+            pass
+
+        # 6. Classifica curva ABC por receita
+        receita_total = sum(receita_por_item.values())
+        itens_ordenados = sorted(itens, key=lambda x: receita_por_item.get(x, 0), reverse=True)
+
+        resultado = []
+        acumulado = 0
+        for iid in itens_ordenados:
+            det = detalhes_map.get(iid, {})
+            receita = receita_por_item.get(iid, 0)
+            acumulado += receita
+            pct_acumulado = (acumulado / receita_total * 100) if receita_total > 0 else 0
+            curva = "A" if pct_acumulado <= 80 else ("B" if pct_acumulado <= 95 else "C")
+            logistic = det.get("shipping", {}).get("logistic_type", "")
+            em_full = logistic in ("fulfillment", "self_service_full")
+            em_campanha = iid in itens_em_campanha
+
+            resultado.append({
+                "id": iid,
+                "titulo": det.get("title", iid),
+                "preco": det.get("price", 0),
+                "thumbnail": det.get("thumbnail", ""),
+                "curva": curva,
+                "receita_90d": round(receita, 2),
+                "vendas_90d": vendas_por_item.get(iid, 0),
+                "em_full": em_full,
+                "em_campanha": em_campanha,
+                "sem_full": curva == "A" and not em_full,
+                "sem_campanha": curva == "A" and not em_campanha,
+            })
+
+        curva_a = [x for x in resultado if x["curva"] == "A"]
+        curva_b = [x for x in resultado if x["curva"] == "B"]
+        curva_c = [x for x in resultado if x["curva"] == "C"]
+
+        return {
+            "curva_a": curva_a[:50],
+            "curva_b": curva_b[:50],
+            "curva_c": curva_c[:30],
+            "resumo": {
+                "total_itens": len(resultado),
+                "qtd_a": len(curva_a),
+                "qtd_b": len(curva_b),
+                "qtd_c": len(curva_c),
+                "receita_total_90d": round(receita_total, 2),
+                "a_sem_full": sum(1 for x in curva_a if x["sem_full"]),
+                "a_sem_campanha": sum(1 for x in curva_a if x["sem_campanha"]),
+                "tem_dados_campanha": len(itens_em_campanha) > 0,
+            }
+        }
+    except Exception as e:
+        return {"erro": str(e), "curva_a": [], "curva_b": [], "curva_c": [], "resumo": {}}
+
 @app.get("/historico/{usuario_id}")
 def historico(usuario_id: str, conta_ml_id: str):
     try:
