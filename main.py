@@ -276,7 +276,7 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
 
     ADS_HEADERS = {**H, "Api-Version": "2"}
     r_adv = requests.get("https://api.mercadolibre.com/advertising/advertisers?product_id=PADS", headers=ADS_HEADERS)
-    score_ads = 50
+    score_ads = 0
     resultado["metricas"]["publicidade"] = {"sem_ads": True, "campanhas": []}
     if r_adv.status_code == 200:
         advertisers = r_adv.json().get("advertisers", [])
