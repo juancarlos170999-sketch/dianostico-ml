@@ -237,9 +237,8 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
 
     r_itens = requests.get(f"https://api.mercadolibre.com/users/{user_id}/items/search", headers=H)
     item_ids = r_itens.json().get("results",[])
-    score_estoque = 100
     total_itens = len(item_ids)
-    itens_ativos = itens_ruptura = itens_baixo = sem_full = 0
+    itens_ativos = itens_ruptura = itens_baixo = itens_com_estoque = sem_full = 0
 
     for item_id in item_ids:
         r_item = requests.get(f"https://api.mercadolibre.com/items/{item_id}", headers=H)
@@ -255,11 +254,12 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
         if status=="active":
             itens_ativos += 1
             if logistica not in ["fulfillment","xd_drop_off"]: sem_full += 1
+            if estoque > 0:
+                itens_com_estoque += 1
         if estoque==0 and status=="active":
-            itens_ruptura += 1; score_estoque -= 25
+            itens_ruptura += 1
             resultado["alertas"].append({"tipo":"CRITICO","categoria":"Estoque","mensagem":f"'{tc}' ATIVO com estoque ZERO.","acao":"Pause o anúncio imediatamente ou reponha estoque.","referencia":"Anúncio ativo sem estoque queima budget de ads"})
         elif estoque==0 and status=="closed" and vendas>0:
-            score_estoque -= 10
             resultado["alertas"].append({"tipo":"ATENCAO","categoria":"Estoque","mensagem":f"'{tc}' fechado com {vendas} vendas anteriores.","acao":f"Repor estoque e reativar. Potencial: R${preco}/venda.","referencia":"Produto com histórico tem mais chance de conversão"})
         elif 0<estoque<=5 and status=="active":
             itens_baixo += 1
@@ -267,7 +267,9 @@ def diagnostico(user_id: str, token: str, usuario_id: str, conta_ml_id: str = ""
         if logistica not in ["fulfillment","xd_drop_off"] and status=="active": problemas.append("Sem Full/Flex")
         resultado["skus"].append({"produto":tc,"preco":preco,"estoque":estoque,"vendas":vendas,"status":status,"logistica":logistica or "Padrao","situacao":" | ".join(problemas) if problemas else "OK"})
 
-    resultado["scores"]["estoque"] = max(0, score_estoque)
+    # Score estoque = % de produtos ativos com estoque (0 = nenhum tem estoque, 100 = todos têm)
+    score_estoque = int((itens_com_estoque / itens_ativos) * 100) if itens_ativos > 0 else 0
+    resultado["scores"]["estoque"] = score_estoque
     resultado["metricas"]["estoque"] = {"total_itens":total_itens,"itens_ativos":itens_ativos,"itens_ruptura":itens_ruptura,"itens_estoque_baixo":itens_baixo,"sem_full":sem_full}
     if sem_full>0:
         resultado["alertas"].append({"tipo":"ATENCAO","categoria":"Logística","mensagem":f"{sem_full} itens ativos sem Full ou Flex.","acao":"Ative Full nos top SKUs para triplicar chances de venda.","referencia":"Full = 3x mais chances de venda + prioridade no algoritmo"})
